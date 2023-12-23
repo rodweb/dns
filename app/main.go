@@ -12,7 +12,6 @@ import (
 
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
 
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
@@ -36,10 +35,14 @@ func main() {
 			break
 		}
 
-		receivedData := string(buf[:size])
-		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
+		message := &Message{}
+		err = message.Decode(buf[:size])
+		if err != nil {
+			fmt.Println("Failed to decode message:", err)
+			continue
+		}
 
-		response := NewResponse().
+		response := NewResponse(message).
 			SetQuestion(&Question{
 				Name:  "codecrafters.io",
 				Type:  1,
@@ -53,7 +56,6 @@ func main() {
 				RDATA: []byte{0x8, 0x8, 0x8, 0x8},
 			}).
 			Serialize()
-		fmt.Printf("Sending %d bytes to %s: %s\n", len(response), source, response)
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
@@ -62,24 +64,59 @@ func main() {
 	}
 }
 
-func NewResponse() *Message {
+func (m *Message) Decode(data []byte) error {
+	m.Header = &Header{}
+	err := m.Header.Decode(data[:12])
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *Header) Decode(data []byte) error {
+	h.ID = binary.BigEndian.Uint16(data[0:2])
+	flags := binary.BigEndian.Uint16(data[2:4])
+	h.QR = (flags >> 15 & 0x01) != 0
+	h.OPCODE = uint8((flags >> 11)) & 0x0F
+	h.AA = (flags >> 10 & 0x01) != 0
+	h.TC = (flags >> 9 & 0x01) != 0
+	h.RD = (flags >> 8 & 0x01) != 0
+	h.RA = (flags >> 7 & 0x01) != 0
+	h.Z = uint8((flags >> 4)) & 0x07
+	h.QDCOUNT = binary.BigEndian.Uint16(data[4:6])
+	h.ANCOUNT = binary.BigEndian.Uint16(data[6:8])
+	h.NSCOUNT = binary.BigEndian.Uint16(data[8:10])
+	h.ARCOUNT = binary.BigEndian.Uint16(data[10:12])
+	return nil
+}
+
+func NewResponse(req *Message) *Message {
 	return &Message{
 		Header: &Header{
-			ID:      1234,
+			ID:      req.Header.ID,
 			QR:      true,
-			OPCODE:  0,
+			OPCODE:  req.Header.OPCODE,
 			AA:      false,
 			TC:      false,
-			RD:      false,
+			RD:      req.Header.RD,
 			RA:      false,
 			Z:       0,
-			RCODE:   0,
+			RCODE:   getResponseCode(req.Header),
 			QDCOUNT: 0,
 			ANCOUNT: 0,
 			NSCOUNT: 0,
 			ARCOUNT: 0,
 		},
 	}
+}
+
+func getResponseCode(header *Header) uint8 {
+	// Standard query (opcode == 0)
+	if header.OPCODE == 0 {
+		return 0
+	}
+	// Not implemented
+	return 4
 }
 
 // Message is a struct that represents a DNS message
@@ -173,7 +210,7 @@ func (h *Header) Serialize() []byte {
 // https://www.rfc-editor.org/rfc/rfc1035#section-4.1.2
 type Question struct {
 	// Domain name represented as a sequence of labels
-	// Labels are encoded as <length><label> where <length> is a single octet
+	// which are encoded as <length><label> where <length> is a single octet
 	Name string
 	// Type of the query (1 = A, 2 = NS, 5 = CNAME, 6 = SOA, 12 = PTR, 15 = MX, 16 = TXT)
 	// https://www.rfc-editor.org/rfc/rfc1035#section-3.2.2
