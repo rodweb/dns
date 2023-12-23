@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -44,6 +45,13 @@ func main() {
 				Type:  1,
 				Class: 1,
 			}).
+			SetAnswer(&Answer{
+				Name:  "codecrafters.io",
+				Type:  1,
+				Class: 1,
+				TTL:   60,
+				RDATA: []byte{0x8, 0x8, 0x8, 0x8},
+			}).
 			Serialize()
 		fmt.Printf("Sending %d bytes to %s: %s\n", len(response), source, response)
 
@@ -78,6 +86,7 @@ func NewResponse() *Message {
 type Message struct {
 	Header   *Header
 	Question *Question
+	Answer   *Answer
 }
 
 func (m *Message) SetQuestion(question *Question) *Message {
@@ -86,10 +95,17 @@ func (m *Message) SetQuestion(question *Question) *Message {
 	return m
 }
 
+func (m *Message) SetAnswer(answer *Answer) *Message {
+	m.Header.ANCOUNT = 1
+	m.Answer = answer
+	return m
+}
+
 func (m *Message) Serialize() []byte {
 	headerBytes := m.Header.Serialize()
 	questionBytes := m.Question.Serialize()
-	return append(headerBytes, questionBytes...)
+	answerBytes := m.Answer.Serialize()
+	return bytes.Join([][]byte{headerBytes, questionBytes, answerBytes}, []byte{})
 }
 
 // Header is a struct that represents a DNS message header
@@ -153,27 +169,71 @@ func (h *Header) Serialize() []byte {
 	return result
 }
 
-// Question is a struct that represents a DNS message Question
+// Question is a struct that represents a DNS question
+// https://www.rfc-editor.org/rfc/rfc1035#section-4.1.2
 type Question struct {
-	Name  string
-	Type  uint16
+	// Domain name represented as a sequence of labels
+	// Labels are encoded as <length><label> where <length> is a single octet
+	Name string
+	// Type of the query (1 = A, 2 = NS, 5 = CNAME, 6 = SOA, 12 = PTR, 15 = MX, 16 = TXT)
+	// https://www.rfc-editor.org/rfc/rfc1035#section-3.2.2
+	Type uint16
+	// Class of the query (1 = IN, 2 = CS, 3 = CH, 4 = HS)
+	// https://www.rfc-editor.org/rfc/rfc1035#section-3.2.4
 	Class uint16
 }
 
 func (q *Question) Serialize() []byte {
-	var result []byte
+	var buff bytes.Buffer
 
-	labels := strings.Split(q.Name, ".")
+	buff.Write(serializeDomainName(q.Name))
+	binary.Write(&buff, binary.BigEndian, q.Type)
+	binary.Write(&buff, binary.BigEndian, q.Class)
+
+	return buff.Bytes()
+}
+
+// Answer is a struct that represents a DNS answer
+// https://www.rfc-editor.org/rfc/rfc1035#section-3.2.1
+type Answer struct {
+	Name string
+	// Type of the query (1 = A, 2 = NS, 5 = CNAME, 6 = SOA, 12 = PTR, 15 = MX, 16 = TXT)
+	// https://www.rfc-editor.org/rfc/rfc1035#section-3.2.2
+	Type uint16
+	// Class of the query (1 = IN, 2 = CS, 3 = CH, 4 = HS)
+	// https://www.rfc-editor.org/rfc/rfc1035#section-3.2.4
+	Class uint16
+	// Time to live in seconds
+	// The duration that the RR can be cached before querying the DNS server again
+	TTL uint32
+	// Length of the RDATA field in bytes
+	RDLENTH uint16
+	// Data specific to the query type
+	RDATA []byte
+}
+
+func (a Answer) Serialize() []byte {
+	var buff bytes.Buffer
+
+	buff.Write(serializeDomainName(a.Name))
+	binary.Write(&buff, binary.BigEndian, a.Type)
+	binary.Write(&buff, binary.BigEndian, a.Class)
+	binary.Write(&buff, binary.BigEndian, a.TTL)
+	binary.Write(&buff, binary.BigEndian, uint16(len(a.RDATA)))
+	buff.Write(a.RDATA)
+
+	return buff.Bytes()[:buff.Len()]
+}
+
+func serializeDomainName(domain string) []byte {
+	var buff bytes.Buffer
+
+	labels := strings.Split(domain, ".")
 	for _, label := range labels {
-		result = append(result, byte(len(label)))
-		result = append(result, []byte(label)...)
+		buff.WriteByte(byte(len(label)))
+		buff.Write([]byte(label))
 	}
-	result = append(result, 0x00)
+	buff.WriteByte(0x00)
 
-	additional := make([]byte, 4)
-	binary.BigEndian.PutUint16(additional[:2], q.Type)
-	binary.BigEndian.PutUint16(additional[2:4], q.Class)
-	result = append(result, additional...)
-
-	return result
+	return buff.Bytes()
 }
