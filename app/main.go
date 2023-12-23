@@ -42,22 +42,24 @@ func main() {
 			continue
 		}
 
-		response := NewResponse(message).
-			SetQuestion(&Question{
-				Name:  "codecrafters.io",
+		reply := newReply(message)
+		for i, question := range message.Questions {
+			reply.Questions[i] = &Question{
+				Name:  question.Name,
 				Type:  1,
 				Class: 1,
-			}).
-			SetAnswer(&Answer{
-				Name:  "codecrafters.io",
+			}
+			reply.Answers[i] = &Answer{
+				Name:  question.Name,
 				Type:  1,
 				Class: 1,
 				TTL:   60,
 				RDATA: []byte{0x8, 0x8, 0x8, 0x8},
-			}).
-			Serialize()
+			}
+		}
+		replyBytes := reply.Encode()
 
-		_, err = udpConn.WriteToUDP(response, source)
+		_, err = udpConn.WriteToUDP(replyBytes, source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
@@ -65,32 +67,71 @@ func main() {
 }
 
 func (m *Message) Decode(data []byte) error {
-	m.Header = &Header{}
-	err := m.Header.Decode(data[:12])
-	if err != nil {
-		return err
-	}
+	m.Header = headerFromBytes(data[:12])
+	fmt.Printf("Decoding Header %+v\n", m.Header)
+	m.Questions = questionsFromBytes(data[12:], m.Header.QDCOUNT)
+	fmt.Printf("Decoding Question %+v\n", m.Questions[0])
 	return nil
 }
 
-func (h *Header) Decode(data []byte) error {
-	h.ID = binary.BigEndian.Uint16(data[0:2])
+func headerFromBytes(data []byte) *Header {
 	flags := binary.BigEndian.Uint16(data[2:4])
-	h.QR = (flags >> 15 & 0x01) != 0
-	h.OPCODE = uint8((flags >> 11)) & 0x0F
-	h.AA = (flags >> 10 & 0x01) != 0
-	h.TC = (flags >> 9 & 0x01) != 0
-	h.RD = (flags >> 8 & 0x01) != 0
-	h.RA = (flags >> 7 & 0x01) != 0
-	h.Z = uint8((flags >> 4)) & 0x07
-	h.QDCOUNT = binary.BigEndian.Uint16(data[4:6])
-	h.ANCOUNT = binary.BigEndian.Uint16(data[6:8])
-	h.NSCOUNT = binary.BigEndian.Uint16(data[8:10])
-	h.ARCOUNT = binary.BigEndian.Uint16(data[10:12])
-	return nil
+	return &Header{
+		ID:      binary.BigEndian.Uint16(data[0:2]),
+		QR:      (flags >> 15 & 0x01) != 0,
+		OPCODE:  uint8((flags >> 11)) & 0x0F,
+		AA:      (flags >> 10 & 0x01) != 0,
+		TC:      (flags >> 9 & 0x01) != 0,
+		RD:      (flags >> 8 & 0x01) != 0,
+		RA:      (flags >> 7 & 0x01) != 0,
+		Z:       uint8((flags >> 4)) & 0x07,
+		QDCOUNT: binary.BigEndian.Uint16(data[4:6]),
+		ANCOUNT: binary.BigEndian.Uint16(data[6:8]),
+		NSCOUNT: binary.BigEndian.Uint16(data[8:10]),
+		ARCOUNT: binary.BigEndian.Uint16(data[10:12]),
+	}
 }
 
-func NewResponse(req *Message) *Message {
+func questionsFromBytes(data []byte, count uint16) []*Question {
+	result := make([]*Question, count)
+	var offset int
+	for i := 0; i < int(count); i++ {
+		question, bytesRead := questionFromBytes(data[offset:])
+		if bytesRead == 0 {
+			break
+		}
+		result[i] = question
+		offset += bytesRead
+	}
+	return result
+}
+
+func questionFromBytes(data []byte) (*Question, int) {
+	name, offset := domainNameFromBytes(data)
+	return &Question{
+		Name:  name,
+		Type:  binary.BigEndian.Uint16(data[offset : offset+2]),
+		Class: binary.BigEndian.Uint16(data[offset+2 : offset+4]),
+	}, offset + 4
+}
+
+func domainNameFromBytes(data []byte) (string, int) {
+	var result []string
+	var offset int
+	for {
+		bytesToRead := int(data[offset])
+		offset++
+		label := string(data[offset : offset+bytesToRead])
+		result = append(result, label)
+		offset += bytesToRead
+		if data[offset] == 0x00 {
+			break
+		}
+	}
+	return strings.Join(result, "."), int(offset)
+}
+
+func newReply(req *Message) *Message {
 	return &Message{
 		Header: &Header{
 			ID:      req.Header.ID,
@@ -102,11 +143,13 @@ func NewResponse(req *Message) *Message {
 			RA:      false,
 			Z:       0,
 			RCODE:   getResponseCode(req.Header),
-			QDCOUNT: 0,
-			ANCOUNT: 0,
+			QDCOUNT: req.Header.QDCOUNT,
+			ANCOUNT: req.Header.QDCOUNT,
 			NSCOUNT: 0,
 			ARCOUNT: 0,
 		},
+		Questions: make([]*Question, req.Header.QDCOUNT),
+		Answers:   make([]*Answer, req.Header.QDCOUNT),
 	}
 }
 
@@ -121,27 +164,17 @@ func getResponseCode(header *Header) uint8 {
 
 // Message is a struct that represents a DNS message
 type Message struct {
-	Header   *Header
-	Question *Question
-	Answer   *Answer
+	Header    *Header
+	Questions []*Question
+	Answers   []*Answer
 }
 
-func (m *Message) SetQuestion(question *Question) *Message {
-	m.Header.QDCOUNT = 1
-	m.Question = question
-	return m
-}
-
-func (m *Message) SetAnswer(answer *Answer) *Message {
-	m.Header.ANCOUNT = 1
-	m.Answer = answer
-	return m
-}
-
-func (m *Message) Serialize() []byte {
+func (m *Message) Encode() []byte {
+	fmt.Printf("Encoding Header %+v\n", m.Header)
+	fmt.Printf("Encoding Question %+v\n", m.Questions[0])
 	headerBytes := m.Header.Serialize()
-	questionBytes := m.Question.Serialize()
-	answerBytes := m.Answer.Serialize()
+	questionBytes := m.Questions[0].Encode()
+	answerBytes := m.Answers[0].Encode()
 	return bytes.Join([][]byte{headerBytes, questionBytes, answerBytes}, []byte{})
 }
 
@@ -220,7 +253,7 @@ type Question struct {
 	Class uint16
 }
 
-func (q *Question) Serialize() []byte {
+func (q *Question) Encode() []byte {
 	var buff bytes.Buffer
 
 	buff.Write(serializeDomainName(q.Name))
@@ -249,7 +282,7 @@ type Answer struct {
 	RDATA []byte
 }
 
-func (a Answer) Serialize() []byte {
+func (a Answer) Encode() []byte {
 	var buff bytes.Buffer
 
 	buff.Write(serializeDomainName(a.Name))
