@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 	// Uncomment this block to pass the first stage
 	// "net"
 )
@@ -37,25 +38,13 @@ func main() {
 		receivedData := string(buf[:size])
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 
-		// Create an empty response
-		message := Message{
-			Header: Header{
-				ID:      1234,
-				QR:      true,
-				OPCODE:  0,
-				AA:      false,
-				TC:      false,
-				RD:      false,
-				RA:      false,
-				Z:       0,
-				RCODE:   0,
-				QDCOUNT: 0,
-				ANCOUNT: 0,
-				NSCOUNT: 0,
-				ARCOUNT: 0,
-			},
-		}
-		response := message.Serialize()
+		response := NewResponse().
+			SetQuestion(&Question{
+				Name:  "codecrafters.io",
+				Type:  1,
+				Class: 1,
+			}).
+			Serialize()
 		fmt.Printf("Sending %d bytes to %s: %s\n", len(response), source, response)
 
 		_, err = udpConn.WriteToUDP(response, source)
@@ -65,48 +54,42 @@ func main() {
 	}
 }
 
-func (m *Message) Serialize() []byte {
-	message := make([]byte, 12)
-
-	// ID
-	binary.BigEndian.PutUint16(message[0:2], m.Header.ID)
-
-	// Flags (QR, OPCODE, AA, TC, RD, RA, Z, RCODE)
-	flags := uint16(0)
-
-	if m.Header.QR {
-		flags |= 1 << 15
+func NewResponse() *Message {
+	return &Message{
+		Header: &Header{
+			ID:      1234,
+			QR:      true,
+			OPCODE:  0,
+			AA:      false,
+			TC:      false,
+			RD:      false,
+			RA:      false,
+			Z:       0,
+			RCODE:   0,
+			QDCOUNT: 0,
+			ANCOUNT: 0,
+			NSCOUNT: 0,
+			ARCOUNT: 0,
+		},
 	}
-
-	flags |= uint16(m.Header.OPCODE) << 11
-
-	if m.Header.AA {
-		flags |= 1 << 10
-	}
-
-	if m.Header.TC {
-		flags |= 1 << 9
-	}
-
-	if m.Header.RD {
-		flags |= 1 << 8
-	}
-
-	if m.Header.RA {
-		flags |= 1 << 7
-	}
-
-	flags |= uint16(m.Header.Z) << 4
-	flags |= uint16(m.Header.RCODE)
-
-	binary.BigEndian.PutUint16(message[2:4], flags)
-
-	return message
 }
 
 // Message is a struct that represents a DNS message
 type Message struct {
-	Header Header
+	Header   *Header
+	Question *Question
+}
+
+func (m *Message) SetQuestion(question *Question) *Message {
+	m.Header.QDCOUNT = 1
+	m.Question = question
+	return m
+}
+
+func (m *Message) Serialize() []byte {
+	headerBytes := m.Header.Serialize()
+	questionBytes := m.Question.Serialize()
+	return append(headerBytes, questionBytes...)
 }
 
 // Header is a struct that represents a DNS message header
@@ -125,4 +108,72 @@ type Header struct {
 	ANCOUNT uint16 // Number of resource records in the answer section
 	NSCOUNT uint16 // Number of name server resource records in the authority records section
 	ARCOUNT uint16 // Number of resource records in the additional records section
+}
+
+func (h *Header) Serialize() []byte {
+	result := make([]byte, 12)
+
+	// ID
+	binary.BigEndian.PutUint16(result[0:2], h.ID)
+
+	// Flags (QR, OPCODE, AA, TC, RD, RA, Z, RCODE)
+	flags := uint16(0)
+
+	if h.QR {
+		flags |= 1 << 15
+	}
+
+	flags |= uint16(h.OPCODE) << 11
+
+	if h.AA {
+		flags |= 1 << 10
+	}
+
+	if h.TC {
+		flags |= 1 << 9
+	}
+
+	if h.RD {
+		flags |= 1 << 8
+	}
+
+	if h.RA {
+		flags |= 1 << 7
+	}
+
+	flags |= uint16(h.Z) << 4
+	flags |= uint16(h.RCODE)
+
+	binary.BigEndian.PutUint16(result[2:4], flags)
+	binary.BigEndian.PutUint16(result[4:6], h.QDCOUNT)
+	binary.BigEndian.PutUint16(result[6:8], h.ANCOUNT)
+	binary.BigEndian.PutUint16(result[8:10], h.NSCOUNT)
+	binary.BigEndian.PutUint16(result[10:12], h.ARCOUNT)
+
+	return result
+}
+
+// Question is a struct that represents a DNS message Question
+type Question struct {
+	Name  string
+	Type  uint16
+	Class uint16
+}
+
+func (q *Question) Serialize() []byte {
+	var result []byte
+
+	labels := strings.Split(q.Name, ".")
+	for _, label := range labels {
+		result = append(result, byte(len(label)))
+		result = append(result, []byte(label)...)
+	}
+	result = append(result, 0x00)
+
+	additional := make([]byte, 4)
+	binary.BigEndian.PutUint16(additional[:2], q.Type)
+	binary.BigEndian.PutUint16(additional[2:4], q.Class)
+	result = append(result, additional...)
+
+	return result
 }
