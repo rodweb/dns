@@ -69,7 +69,7 @@ func main() {
 func (m *Message) Decode(data []byte) error {
 	m.Header = headerFromBytes(data[:12])
 	fmt.Printf("Decoding Header %+v\n", m.Header)
-	m.Questions = questionsFromBytes(data[12:], m.Header.QDCOUNT)
+	m.Questions = questionsFromBytes(data[12:], m.Header.QueryCount)
 	fmt.Printf("Decoding Question %+v\n", m.Questions[0])
 	return nil
 }
@@ -77,18 +77,18 @@ func (m *Message) Decode(data []byte) error {
 func headerFromBytes(data []byte) *Header {
 	flags := binary.BigEndian.Uint16(data[2:4])
 	return &Header{
-		ID:      binary.BigEndian.Uint16(data[0:2]),
-		QR:      (flags >> 15 & 0x01) != 0,
-		OPCODE:  uint8((flags >> 11)) & 0x0F,
-		AA:      (flags >> 10 & 0x01) != 0,
-		TC:      (flags >> 9 & 0x01) != 0,
-		RD:      (flags >> 8 & 0x01) != 0,
-		RA:      (flags >> 7 & 0x01) != 0,
-		Z:       uint8((flags >> 4)) & 0x07,
-		QDCOUNT: binary.BigEndian.Uint16(data[4:6]),
-		ANCOUNT: binary.BigEndian.Uint16(data[6:8]),
-		NSCOUNT: binary.BigEndian.Uint16(data[8:10]),
-		ARCOUNT: binary.BigEndian.Uint16(data[10:12]),
+		ID:                  binary.BigEndian.Uint16(data[0:2]),
+		IsResponse:          (flags >> 15 & 0x01) != 0,
+		OperationCode:       uint8((flags >> 11)) & 0x0F,
+		AuthoritativeAnswer: (flags >> 10 & 0x01) != 0,
+		Truncated:           (flags >> 9 & 0x01) != 0,
+		RecursionDesired:    (flags >> 8 & 0x01) != 0,
+		RecursionAvailable:  (flags >> 7 & 0x01) != 0,
+		Reserved:            uint8((flags >> 4)) & 0x07,
+		QueryCount:          binary.BigEndian.Uint16(data[4:6]),
+		AnswerCount:         binary.BigEndian.Uint16(data[6:8]),
+		AuthoritativeCount:  binary.BigEndian.Uint16(data[8:10]),
+		AdditionalCount:     binary.BigEndian.Uint16(data[10:12]),
 	}
 }
 
@@ -134,28 +134,28 @@ func domainNameFromBytes(data []byte) (string, int) {
 func newReply(req *Message) *Message {
 	return &Message{
 		Header: &Header{
-			ID:      req.Header.ID,
-			QR:      true,
-			OPCODE:  req.Header.OPCODE,
-			AA:      false,
-			TC:      false,
-			RD:      req.Header.RD,
-			RA:      false,
-			Z:       0,
-			RCODE:   getResponseCode(req.Header),
-			QDCOUNT: req.Header.QDCOUNT,
-			ANCOUNT: req.Header.QDCOUNT,
-			NSCOUNT: 0,
-			ARCOUNT: 0,
+			ID:                  req.Header.ID,
+			IsResponse:          true,
+			OperationCode:       req.Header.OperationCode,
+			AuthoritativeAnswer: false,
+			Truncated:           false,
+			RecursionDesired:    req.Header.RecursionDesired,
+			RecursionAvailable:  false,
+			Reserved:            0,
+			ResponseCode:        getResponseCode(req.Header),
+			QueryCount:          req.Header.QueryCount,
+			AnswerCount:         req.Header.QueryCount,
+			AuthoritativeCount:  0,
+			AdditionalCount:     0,
 		},
-		Questions: make([]*Question, req.Header.QDCOUNT),
-		Answers:   make([]*Answer, req.Header.QDCOUNT),
+		Questions: make([]*Question, req.Header.QueryCount),
+		Answers:   make([]*Answer, req.Header.QueryCount),
 	}
 }
 
 func getResponseCode(header *Header) uint8 {
 	// Standard query (opcode == 0)
-	if header.OPCODE == 0 {
+	if header.OperationCode == 0 {
 		return 0
 	}
 	// Not implemented
@@ -173,27 +173,60 @@ func (m *Message) Encode() []byte {
 	fmt.Printf("Encoding Header %+v\n", m.Header)
 	fmt.Printf("Encoding Question %+v\n", m.Questions[0])
 	headerBytes := m.Header.Serialize()
-	questionBytes := m.Questions[0].Encode()
-	answerBytes := m.Answers[0].Encode()
-	return bytes.Join([][]byte{headerBytes, questionBytes, answerBytes}, []byte{})
+	var resourceRecordBytes []byte
+	for _, question := range m.Questions {
+		resourceRecordBytes = append(resourceRecordBytes, question.Encode()...)
+	}
+	for _, answer := range m.Answers {
+		resourceRecordBytes = append(resourceRecordBytes, answer.Encode()...)
+	}
+	return bytes.Join([][]byte{headerBytes, resourceRecordBytes}, []byte{})
 }
 
 // Header is a struct that represents a DNS message header
 // The header is 12 bytes long
+// https://tools.ietf.org/html/rfc1035#section-4.1
 type Header struct {
-	ID      uint16 // Package identifier
-	QR      bool   // Query/Response flag
-	OPCODE  uint8  // Operation code - 4bits
-	AA      bool   // Authoritative Answer
-	TC      bool   // Truncation flag
-	RD      bool   // Recursion Desired
-	RA      bool   // Recursion Available
-	Z       uint8  // Reserved for future use - 3bits
-	RCODE   uint8  // Response code - 4bits
-	QDCOUNT uint16 // Number of entries in the question section
-	ANCOUNT uint16 // Number of resource records in the answer section
-	NSCOUNT uint16 // Number of name server resource records in the authority records section
-	ARCOUNT uint16 // Number of resource records in the additional records section
+	// ID represents the Package identifier (ID).
+	// A random identifier is assigned to query packets and
+	// the response packages must reply with the same ID.
+	ID uint16
+	// IsResponse represents the Query/Response flag (QR).
+	// 0 = Query, 1 = Response
+	IsResponse bool
+	// OperationCode represents the Operation code (OPCODE).
+	// It is 4 bits long and typically is 0 (standard query).
+	OperationCode uint8
+	// AuthoritativeAnswer represents the Authoritative Answer (AA) flag.
+	// If set to 1, the responding server is an authority for
+	// the domain name in question section. This means it "owns" the domain.
+	AuthoritativeAnswer bool
+	// Truncated represents the Truncation flag (TC).
+	// If set to 1, the message was truncated because it exceeded 512 bytes.
+	// In that case, the query must be repeated using TCP.
+	Truncated bool
+	// RecursionDesired represents the Recursion Desired (RD) flag.
+	// If set to 1, the client wants the server to recursively resolve the query.
+	RecursionDesired bool
+	// RecursionAvailable represents the Recursion Available (RA) flag.
+	// If set to 1, the server supports recursive queries.
+	RecursionAvailable bool
+	// Reserved represents the Reserved (Z) flag.
+	// It is 3 bits long and was originally reserved for later use, but now
+	// used for DNSSEC queries.
+	Reserved uint8
+	// ResponseCode represents the Response code (RCODE).
+	// It is 4 bits long and is set by the server to indicate the status of the query.
+	// 0 = No error condition
+	ResponseCode uint8
+	// QueryCount represents the number of entries in the question section (QDCOUNT).
+	QueryCount uint16
+	// AnswerCount represents the number of entries in the answer section (ANCOUNT).
+	AnswerCount uint16
+	// AuthoritativeCount represents the number of entries in the authority records section (NSCOUNT).
+	AuthoritativeCount uint16
+	// AdditionalCount represents the number of entries in the additional records section (ARCOUNT).
+	AdditionalCount uint16
 }
 
 func (h *Header) Serialize() []byte {
@@ -202,39 +235,39 @@ func (h *Header) Serialize() []byte {
 	// ID
 	binary.BigEndian.PutUint16(result[0:2], h.ID)
 
-	// Flags (QR, OPCODE, AA, TC, RD, RA, Z, RCODE)
+	// Flags (IsResponse, OperationCode, Authoritative, Truncated, RD, RA, Z, RCODE)
 	flags := uint16(0)
 
-	if h.QR {
+	if h.IsResponse {
 		flags |= 1 << 15
 	}
 
-	flags |= uint16(h.OPCODE) << 11
+	flags |= uint16(h.OperationCode) << 11
 
-	if h.AA {
+	if h.AuthoritativeAnswer {
 		flags |= 1 << 10
 	}
 
-	if h.TC {
+	if h.Truncated {
 		flags |= 1 << 9
 	}
 
-	if h.RD {
+	if h.RecursionDesired {
 		flags |= 1 << 8
 	}
 
-	if h.RA {
+	if h.RecursionAvailable {
 		flags |= 1 << 7
 	}
 
-	flags |= uint16(h.Z) << 4
-	flags |= uint16(h.RCODE)
+	flags |= uint16(h.Reserved) << 4
+	flags |= uint16(h.ResponseCode)
 
 	binary.BigEndian.PutUint16(result[2:4], flags)
-	binary.BigEndian.PutUint16(result[4:6], h.QDCOUNT)
-	binary.BigEndian.PutUint16(result[6:8], h.ANCOUNT)
-	binary.BigEndian.PutUint16(result[8:10], h.NSCOUNT)
-	binary.BigEndian.PutUint16(result[10:12], h.ARCOUNT)
+	binary.BigEndian.PutUint16(result[4:6], h.QueryCount)
+	binary.BigEndian.PutUint16(result[6:8], h.AnswerCount)
+	binary.BigEndian.PutUint16(result[8:10], h.AuthoritativeCount)
+	binary.BigEndian.PutUint16(result[10:12], h.AdditionalCount)
 
 	return result
 }
