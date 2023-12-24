@@ -35,29 +35,21 @@ func main() {
 			break
 		}
 
-		message := &Message{}
-		err = message.Decode(buf[:size])
+		var s strings.Builder
+		s.WriteString("Packet received:\n")
+		for i, b := range buf[:size] {
+			if (i % 8) == 0 {
+				s.WriteString("\n")
+			}
+			s.WriteString(fmt.Sprintf("0x%02x, ", b))
+		}
+		s.WriteString("\n\n")
+		fmt.Printf(s.String())
+		replyBytes, err := HandleReply(buf[:size])
 		if err != nil {
-			fmt.Println("Failed to decode message:", err)
+			fmt.Println("Failed to handle reply:", err)
 			continue
 		}
-
-		reply := newReply(message)
-		for i, question := range message.Questions {
-			reply.Questions[i] = &Question{
-				Name:  question.Name,
-				Type:  1,
-				Class: 1,
-			}
-			reply.Answers[i] = &Answer{
-				Name:  question.Name,
-				Type:  1,
-				Class: 1,
-				TTL:   60,
-				RDATA: []byte{0x8, 0x8, 0x8, 0x8},
-			}
-		}
-		replyBytes := reply.Encode()
 
 		_, err = udpConn.WriteToUDP(replyBytes, source)
 		if err != nil {
@@ -66,10 +58,37 @@ func main() {
 	}
 }
 
+func HandleReply(data []byte) ([]byte, error) {
+	message := &Message{}
+	err := message.Decode(data)
+	if err != nil {
+		fmt.Println("Failed to decode message:", err)
+		return nil, err
+	}
+
+	reply := newReply(message)
+	for i, question := range message.Questions {
+		reply.Questions[i] = &Question{
+			Name:  question.Name,
+			Type:  1,
+			Class: 1,
+		}
+		reply.Answers[i] = &Answer{
+			Name:  question.Name,
+			Type:  1,
+			Class: 1,
+			TTL:   60,
+			RDATA: []byte{0x8, 0x8, 0x8, 0x8},
+		}
+	}
+	return reply.Encode(), nil
+}
+
 func (m *Message) Decode(data []byte) error {
 	m.Header = headerFromBytes(data[:12])
+	offset := 12
 	fmt.Printf("Decoding Header %+v\n", m.Header)
-	m.Questions = questionsFromBytes(data[12:], m.Header.QueryCount)
+	m.Questions = questionsFromBytes(data, &offset, m.Header.QueryCount)
 	fmt.Printf("Decoding Question %+v\n", m.Questions[0])
 	return nil
 }
@@ -87,48 +106,54 @@ func headerFromBytes(data []byte) *Header {
 		Reserved:            uint8((flags >> 4)) & 0x07,
 		QueryCount:          binary.BigEndian.Uint16(data[4:6]),
 		AnswerCount:         binary.BigEndian.Uint16(data[6:8]),
-		AuthoritativeCount:  binary.BigEndian.Uint16(data[8:10]),
+		AuthorityCount:      binary.BigEndian.Uint16(data[8:10]),
 		AdditionalCount:     binary.BigEndian.Uint16(data[10:12]),
 	}
 }
 
-func questionsFromBytes(data []byte, count uint16) []*Question {
+func questionsFromBytes(data []byte, offset *int, count uint16) []*Question {
 	result := make([]*Question, count)
-	var offset int
 	for i := 0; i < int(count); i++ {
-		question, bytesRead := questionFromBytes(data[offset:])
-		if bytesRead == 0 {
-			break
-		}
+		question := questionFromBytes(data, offset)
 		result[i] = question
-		offset += bytesRead
 	}
 	return result
 }
 
-func questionFromBytes(data []byte) (*Question, int) {
-	name, offset := domainNameFromBytes(data)
-	return &Question{
+func questionFromBytes(data []byte, offset *int) *Question {
+	name := domainNameFromBytes(data, offset)
+	question := &Question{
 		Name:  name,
-		Type:  binary.BigEndian.Uint16(data[offset : offset+2]),
-		Class: binary.BigEndian.Uint16(data[offset+2 : offset+4]),
-	}, offset + 4
+		Type:  binary.BigEndian.Uint16(data[*offset : *offset+2]),
+		Class: binary.BigEndian.Uint16(data[*offset+2 : *offset+4]),
+	}
+	*offset += 4
+	return question
 }
 
-func domainNameFromBytes(data []byte) (string, int) {
+func domainNameFromBytes(data []byte, offset *int) string {
 	var result []string
-	var offset int
 	for {
-		bytesToRead := int(data[offset])
-		offset++
-		label := string(data[offset : offset+bytesToRead])
-		result = append(result, label)
-		offset += bytesToRead
-		if data[offset] == 0x00 {
+		if data[*offset] == 0x00 {
+			*offset += 1
 			break
 		}
+
+		// If first two bits are 1, it's a pointer
+		if ((data[*offset] >> 6) & 0x3) == 0x3 {
+			nameOffset := int((binary.BigEndian.Uint16(data[*offset:*offset+2]) << 2) >> 2)
+			result = append(result, domainNameFromBytes(data, &nameOffset))
+			*offset += 2
+			break
+		}
+
+		length := int(data[*offset])
+		*offset++
+		label := string(data[*offset : *offset+length])
+		result = append(result, label)
+		*offset += length
 	}
-	return strings.Join(result, "."), int(offset)
+	return strings.Join(result, ".")
 }
 
 func newReply(req *Message) *Message {
@@ -145,7 +170,7 @@ func newReply(req *Message) *Message {
 			ResponseCode:        getResponseCode(req.Header),
 			QueryCount:          req.Header.QueryCount,
 			AnswerCount:         req.Header.QueryCount,
-			AuthoritativeCount:  0,
+			AuthorityCount:      0,
 			AdditionalCount:     0,
 		},
 		Questions: make([]*Question, req.Header.QueryCount),
@@ -171,13 +196,14 @@ type Message struct {
 
 func (m *Message) Encode() []byte {
 	fmt.Printf("Encoding Header %+v\n", m.Header)
-	fmt.Printf("Encoding Question %+v\n", m.Questions[0])
 	headerBytes := m.Header.Serialize()
 	var resourceRecordBytes []byte
-	for _, question := range m.Questions {
+	for i, question := range m.Questions {
+		fmt.Printf("Encoding Question %d: %+v\n", i, question)
 		resourceRecordBytes = append(resourceRecordBytes, question.Encode()...)
 	}
-	for _, answer := range m.Answers {
+	for i, answer := range m.Answers {
+		fmt.Printf("Encoding Answer %d: %+v\n", i, answer)
 		resourceRecordBytes = append(resourceRecordBytes, answer.Encode()...)
 	}
 	return bytes.Join([][]byte{headerBytes, resourceRecordBytes}, []byte{})
@@ -223,8 +249,8 @@ type Header struct {
 	QueryCount uint16
 	// AnswerCount represents the number of entries in the answer section (ANCOUNT).
 	AnswerCount uint16
-	// AuthoritativeCount represents the number of entries in the authority records section (NSCOUNT).
-	AuthoritativeCount uint16
+	// AuthorityCount represents the number of entries in the authority records section (NSCOUNT).
+	AuthorityCount uint16
 	// AdditionalCount represents the number of entries in the additional records section (ARCOUNT).
 	AdditionalCount uint16
 }
@@ -266,7 +292,7 @@ func (h *Header) Serialize() []byte {
 	binary.BigEndian.PutUint16(result[2:4], flags)
 	binary.BigEndian.PutUint16(result[4:6], h.QueryCount)
 	binary.BigEndian.PutUint16(result[6:8], h.AnswerCount)
-	binary.BigEndian.PutUint16(result[8:10], h.AuthoritativeCount)
+	binary.BigEndian.PutUint16(result[8:10], h.AuthorityCount)
 	binary.BigEndian.PutUint16(result[10:12], h.AdditionalCount)
 
 	return result
