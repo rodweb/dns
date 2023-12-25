@@ -3,15 +3,43 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
+	"math/rand"
 	"net"
+	"strconv"
 	"strings"
-	// Uncomment this block to pass the first stage
-	// "net"
+	"sync"
 )
 
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
+	resolverPtr := flag.String("resolver", "", "Resolver forward requests to (address:port)")
+	flag.Parse()
+	var resolver Resolver
+	fmt.Printf("Resolver: %s\n", *resolverPtr)
+	if *resolverPtr == "" {
+		resolver = NewDefaultResolver()
+	} else {
+		parts := strings.Split(*resolverPtr, ":")
+		if len(parts) != 2 {
+			fmt.Println("Invalid resolver address")
+			return
+		}
+		ip := net.ParseIP(parts[0])
+		if ip == nil {
+			fmt.Println("Invalid resolver address")
+			return
+		}
+		port, err := strconv.Atoi(parts[1])
+		if err != nil {
+			fmt.Println("Invalid resolver address")
+			return
+		}
+		resolver = &ForwardingResolver{
+			IP:   ip,
+			Port: port,
+		}
+	}
 
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
@@ -45,7 +73,7 @@ func main() {
 		}
 		s.WriteString("\n\n")
 		fmt.Printf(s.String())
-		replyBytes, err := HandleReply(buf[:size])
+		replyBytes, err := HandleReply(buf[:size], resolver)
 		if err != nil {
 			fmt.Println("Failed to handle reply:", err)
 			continue
@@ -58,28 +86,17 @@ func main() {
 	}
 }
 
-func HandleReply(data []byte) ([]byte, error) {
+func HandleReply(data []byte, resolver Resolver) ([]byte, error) {
 	message := &Message{}
 	err := message.Decode(data)
 	if err != nil {
 		fmt.Println("Failed to decode message:", err)
 		return nil, err
 	}
-
-	reply := newReply(message)
-	for i, question := range message.Questions {
-		reply.Questions[i] = &Question{
-			Name:  question.Name,
-			Type:  1,
-			Class: 1,
-		}
-		reply.Answers[i] = &Answer{
-			Name:  question.Name,
-			Type:  1,
-			Class: 1,
-			TTL:   60,
-			RDATA: []byte{0x8, 0x8, 0x8, 0x8},
-		}
+	reply, err := resolver.Resolve(message)
+	if err != nil {
+		fmt.Println("Failed to resolve message:", err)
+		return nil, err
 	}
 	return reply.Encode(), nil
 }
@@ -89,7 +106,7 @@ func (m *Message) Decode(data []byte) error {
 	offset := 12
 	fmt.Printf("Decoding Header %+v\n", m.Header)
 	m.Questions = questionsFromBytes(data, &offset, m.Header.QueryCount)
-	fmt.Printf("Decoding Question %+v\n", m.Questions[0])
+	m.Answers = answersFromBytes(data, &offset, m.Header.AnswerCount)
 	return nil
 }
 
@@ -115,6 +132,7 @@ func questionsFromBytes(data []byte, offset *int, count uint16) []*Question {
 	result := make([]*Question, count)
 	for i := 0; i < int(count); i++ {
 		question := questionFromBytes(data, offset)
+		fmt.Printf("Decoding Question %d: %+v\n", i, question)
 		result[i] = question
 	}
 	return result
@@ -134,11 +152,6 @@ func questionFromBytes(data []byte, offset *int) *Question {
 func domainNameFromBytes(data []byte, offset *int) string {
 	var result []string
 	for {
-		if data[*offset] == 0x00 {
-			*offset += 1
-			break
-		}
-
 		// If first two bits are 1, it's a pointer
 		if ((data[*offset] >> 6) & 0x3) == 0x3 {
 			nameOffset := int((binary.BigEndian.Uint16(data[*offset:*offset+2]) << 2) >> 2)
@@ -152,6 +165,11 @@ func domainNameFromBytes(data []byte, offset *int) string {
 		label := string(data[*offset : *offset+length])
 		result = append(result, label)
 		*offset += length
+
+		if data[*offset] == 0x00 {
+			*offset += 1
+			break
+		}
 	}
 	return strings.Join(result, ".")
 }
@@ -176,6 +194,32 @@ func newReply(req *Message) *Message {
 		Questions: make([]*Question, req.Header.QueryCount),
 		Answers:   make([]*Answer, req.Header.QueryCount),
 	}
+}
+
+func answersFromBytes(data []byte, offset *int, count uint16) []*Answer {
+	result := make([]*Answer, count)
+	for i := 0; i < int(count); i++ {
+		answer := answerFromBytes(data, offset)
+		fmt.Printf("Decoding Answer %d: %+v\n", i, answer)
+		result[i] = answer
+	}
+	return result
+}
+
+func answerFromBytes(data []byte, offset *int) *Answer {
+	name := domainNameFromBytes(data, offset)
+	answer := &Answer{
+		Name:   name,
+		Type:   binary.BigEndian.Uint16(data[*offset : *offset+2]),
+		Class:  binary.BigEndian.Uint16(data[*offset+2 : *offset+4]),
+		TTL:    binary.BigEndian.Uint32(data[*offset+4 : *offset+8]),
+		Length: binary.BigEndian.Uint16(data[*offset+8 : *offset+10]),
+	}
+	*offset += 10
+	// TODO: Handle different record types
+	answer.Data = data[*offset : *offset+int(answer.Length)]
+	*offset += int(answer.Length)
+	return answer
 }
 
 func getResponseCode(header *Header) uint8 {
@@ -335,10 +379,10 @@ type Answer struct {
 	// Time to live in seconds
 	// The duration that the RR can be cached before querying the DNS server again
 	TTL uint32
-	// Length of the RDATA field in bytes
-	RDLENTH uint16
-	// Data specific to the query type
-	RDATA []byte
+	// Length of the Data field in bytes (RDLENGTH)
+	Length uint16
+	// Data specific to the query type (RDATA)
+	Data []byte
 }
 
 func (a Answer) Encode() []byte {
@@ -348,8 +392,8 @@ func (a Answer) Encode() []byte {
 	binary.Write(&buff, binary.BigEndian, a.Type)
 	binary.Write(&buff, binary.BigEndian, a.Class)
 	binary.Write(&buff, binary.BigEndian, a.TTL)
-	binary.Write(&buff, binary.BigEndian, uint16(len(a.RDATA)))
-	buff.Write(a.RDATA)
+	binary.Write(&buff, binary.BigEndian, uint16(len(a.Data)))
+	buff.Write(a.Data)
 
 	return buff.Bytes()[:buff.Len()]
 }
@@ -365,4 +409,153 @@ func serializeDomainName(domain string) []byte {
 	buff.WriteByte(0x00)
 
 	return buff.Bytes()
+}
+
+type Resolver interface {
+	Resolve(message *Message) (*Message, error)
+}
+
+type DefaultResolver struct{}
+
+func NewDefaultResolver() *DefaultResolver {
+	return &DefaultResolver{}
+}
+
+func (r *DefaultResolver) Resolve(request *Message) (reply *Message, error error) {
+	reply = newReply(request)
+	for i, question := range request.Questions {
+		reply.Questions[i] = &Question{
+			Name:  question.Name,
+			Type:  1,
+			Class: 1,
+		}
+		reply.Answers[i] = &Answer{
+			Name:  question.Name,
+			Type:  1,
+			Class: 1,
+			TTL:   60,
+			Data:  []byte{0x8, 0x8, 0x8, 0x8},
+		}
+	}
+	return reply, nil
+}
+
+type ForwardingResolver struct {
+	IP   net.IP
+	Port int
+}
+
+// TODO: Improve error handling
+func (r *ForwardingResolver) Resolve(originalRequest *Message) (reply *Message, error error) {
+	// When forwarding a originalRequest, we need to split the questions into multiple requests
+
+	// We map an ID to a question
+	questionMap := make(map[uint16]*Question)
+
+	var wg sync.WaitGroup
+
+	resChan := make(chan *Message, len(originalRequest.Questions))
+
+	for _, question := range originalRequest.Questions {
+		id := generateID()
+		questionMap[id] = question
+		req := &Message{
+			Header: &Header{
+				ID:            id,
+				OperationCode: originalRequest.Header.OperationCode,
+				QueryCount:    1,
+			},
+			Questions: []*Question{
+				question,
+			},
+		}
+		wg.Add(1)
+
+		go func() {
+			res, err := makeRequest(r.IP, r.Port, req.Encode())
+			if err != nil {
+				fmt.Println("Failed to make originalRequest:", err)
+				return
+			}
+			resMessage := &Message{}
+			err = resMessage.Decode(res)
+			if err != nil {
+				fmt.Println("Failed to decode response:", err)
+				return
+			}
+			resChan <- resMessage
+			wg.Done()
+		}()
+	}
+
+	fmt.Printf("IdMap: %+v\n", questionMap)
+
+	go func() {
+		wg.Wait()
+		close(resChan)
+	}()
+
+	questions := make([]*Question, 0, originalRequest.Header.QueryCount)
+	answers := make([]*Answer, 0, originalRequest.Header.QueryCount)
+	for res := range resChan {
+		if res.Header.ResponseCode != 0 {
+			fmt.Println("Response code is not 0")
+			continue
+		}
+		question, ok := questionMap[res.Header.ID]
+		if !ok {
+			fmt.Println("ID not found in map")
+			continue
+		}
+		if len(res.Answers) == 0 {
+			fmt.Println("No answers")
+			continue
+		}
+		questions = append(questions, question)
+		answers = append(answers, res.Answers[0])
+	}
+
+	reply = &Message{
+		Header: &Header{
+			ID:               originalRequest.Header.ID,
+			IsResponse:       true,
+			RecursionDesired: originalRequest.Header.RecursionDesired,
+			OperationCode:    originalRequest.Header.OperationCode,
+			ResponseCode:     getResponseCode(originalRequest.Header),
+			QueryCount:       uint16(len(questions)),
+			AnswerCount:      uint16(len(answers)),
+		},
+		Questions: questions,
+		Answers:   answers,
+	}
+
+	return reply, nil
+}
+
+// generateID generates a random number between 0 and 65535
+func generateID() uint16 {
+	return uint16(rand.Intn(65535))
+}
+
+func makeRequest(ip net.IP, port int, data []byte) ([]byte, error) {
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip.String(), port))
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	_, err = conn.Write(data)
+
+	buffer := make([]byte, 512)
+	size, _, err := conn.ReadFromUDP(buffer)
+	if err != nil {
+		return nil, err
+	}
+
+	return buffer[:size], nil
 }
