@@ -19,11 +19,7 @@ func TestDecodeMessage(t *testing.T) {
 		0x00, 0x01, // Type
 		0x00, 0x01, // Class
 	}
-	message := &msg.Message{}
-	err := message.Decode(packet)
-	if err != nil {
-		t.Error("Failed to decode internal:", err)
-	}
+	message := msg.MessageFromBytes(packet)
 	if message.Header.ID != 1 {
 		t.Error("Failed to decode ID")
 	}
@@ -51,7 +47,7 @@ func TestDecodeMessage(t *testing.T) {
 	if message.Header.ResponseCode != 0 {
 		t.Error("Failed to decode RCODE")
 	}
-	if message.Header.QueryCount != 1 {
+	if message.Header.QuestionCount != 1 {
 		t.Error("Failed to decode QDCOUNT")
 	}
 	if message.Header.AnswerCount != 0 {
@@ -84,11 +80,7 @@ func TestDecodeCompressedMessage(t *testing.T) {
 		0x00, 0x01, // Type
 		0x00, 0x01, // Class
 	}
-	message := &msg.Message{}
-	err := message.Decode(packet)
-	if err != nil {
-		t.Error("Failed to decode internal:", err)
-	}
+	message := msg.MessageFromBytes(packet)
 	if len(message.Questions) != 2 {
 		t.Error("Failed to decode questions")
 	}

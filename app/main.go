@@ -6,7 +6,6 @@ import (
 	msg "github.com/rodweb/dns/internal/message"
 	rsv "github.com/rodweb/dns/internal/resolver"
 	"net"
-	"strconv"
 	"strings"
 )
 
@@ -14,29 +13,12 @@ func main() {
 	resolverPtr := flag.String("resolver", "", "Resolver forward requests to (address:port)")
 	flag.Parse()
 	var resolver rsv.Resolver
+
 	fmt.Printf("Resolver: %s\n", *resolverPtr)
-	if *resolverPtr == "" {
-		resolver = rsv.NewDefaultResolver()
-	} else {
-		parts := strings.Split(*resolverPtr, ":")
-		if len(parts) != 2 {
-			fmt.Println("Invalid resolver address")
-			return
-		}
-		ip := net.ParseIP(parts[0])
-		if ip == nil {
-			fmt.Println("Invalid resolver address")
-			return
-		}
-		port, err := strconv.Atoi(parts[1])
-		if err != nil {
-			fmt.Println("Invalid resolver address")
-			return
-		}
-		resolver = &rsv.ForwardingResolver{
-			IP:   ip,
-			Port: port,
-		}
+	resolver, err := rsv.New(*resolverPtr)
+	if err != nil {
+		fmt.Println("Failed to create resolver:", err)
+		return
 	}
 
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
@@ -85,16 +67,11 @@ func main() {
 }
 
 func HandleReply(data []byte, resolver rsv.Resolver) ([]byte, error) {
-	message := &msg.Message{}
-	err := message.Decode(data)
-	if err != nil {
-		fmt.Println("Failed to decode internal:", err)
-		return nil, err
-	}
+	message := msg.MessageFromBytes(data)
 	reply, err := resolver.Resolve(message)
 	if err != nil {
 		fmt.Println("Failed to resolve internal:", err)
 		return nil, err
 	}
-	return reply.Encode(), nil
+	return reply.Bytes(), nil
 }

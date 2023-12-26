@@ -2,7 +2,6 @@ package message
 
 import (
 	"bytes"
-	"fmt"
 )
 
 // Message is a struct that represents a DNS internal
@@ -12,26 +11,25 @@ type Message struct {
 	Answers   []*Answer
 }
 
-func (m *Message) Encode() []byte {
-	fmt.Printf("Encoding Header %+v\n", m.Header)
-	headerBytes := m.Header.Encode()
-	var resourceRecordBytes []byte
-	for i, question := range m.Questions {
-		fmt.Printf("Encoding Question %d: %+v\n", i, question)
-		resourceRecordBytes = append(resourceRecordBytes, question.Encode()...)
+// Bytes returns a byte array representation of the DNS message
+func (m *Message) Bytes() []byte {
+	var buffer bytes.Buffer
+	buffer.Write(m.Header.Bytes())
+	for _, question := range m.Questions {
+		buffer.Write(question.Bytes())
 	}
-	for i, answer := range m.Answers {
-		fmt.Printf("Encoding Answer %d: %+v\n", i, answer)
-		resourceRecordBytes = append(resourceRecordBytes, answer.Encode()...)
+	for _, answer := range m.Answers {
+		buffer.Write(answer.Bytes())
 	}
-	return bytes.Join([][]byte{headerBytes, resourceRecordBytes}, []byte{})
+	return buffer.Bytes()
 }
 
-func (m *Message) Decode(data []byte) error {
-	m.Header = headerFromBytes(data[:12])
+// MessageFromBytes decodes a DNS message from a byte array
+func MessageFromBytes(packet []byte) *Message {
+	message := &Message{}
+	message.Header = headerFromBytes(packet[:12])
 	offset := 12
-	fmt.Printf("Decoding Header %+v\n", m.Header)
-	m.Questions = questionsFromBytes(data, &offset, m.Header.QueryCount)
-	m.Answers = answersFromBytes(data, &offset, m.Header.AnswerCount)
-	return nil
+	message.Questions = questionsFromBytes(packet, &offset, message.Header.QuestionCount)
+	message.Answers = answersFromBytes(packet, &offset, message.Header.AnswerCount)
+	return message
 }

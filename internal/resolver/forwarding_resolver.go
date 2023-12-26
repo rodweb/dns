@@ -5,33 +5,58 @@ import (
 	msg "github.com/rodweb/dns/internal/message"
 	"math/rand"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 )
 
+// ForwardingResolver is a resolver that forwards requests to another resolver
 type ForwardingResolver struct {
 	IP   net.IP
 	Port int
 }
 
-// TODO: Improve error handling
-func (r *ForwardingResolver) Resolve(originalRequest *msg.Message) (reply *msg.Message, error error) {
-	// When forwarding a originalRequest, we need to split the questions into multiple requests
+// NewForwardingResolver creates a new forwarding resolver
+func NewForwardingResolver(resolverAddress string) (*ForwardingResolver, error) {
+	parts := strings.Split(resolverAddress, ":")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid resolver address")
+	}
+	ip := net.ParseIP(parts[0])
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP address")
+	}
+	port, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid port")
+	}
+	return &ForwardingResolver{
+		IP:   ip,
+		Port: port,
+	}, nil
+}
 
-	// We map an ID to a question
+// TODO: Improve error handling
+// Resolve resolves a request by forwarding it to another resolver
+func (r *ForwardingResolver) Resolve(originalMessage *msg.Message) (*msg.Message, error) {
+	// When forwarding a message, we need to split the questions into multiple queries
+
+	// Create a map of ID to question
 	questionMap := make(map[uint16]*msg.Question)
 
 	var wg sync.WaitGroup
 
-	resChan := make(chan *msg.Message, len(originalRequest.Questions))
+	responseChan := make(chan *msg.Message, len(originalMessage.Questions))
 
-	for _, question := range originalRequest.Questions {
+	// For each question, create a new query and forward it to the resolver
+	for _, question := range originalMessage.Questions {
 		id := generateID()
 		questionMap[id] = question
-		req := &msg.Message{
+		query := &msg.Message{
 			Header: &msg.Header{
 				ID:            id,
-				OperationCode: originalRequest.Header.OperationCode,
-				QueryCount:    1,
+				OperationCode: originalMessage.Header.OperationCode,
+				QuestionCount: 1,
 			},
 			Questions: []*msg.Question{
 				question,
@@ -39,65 +64,59 @@ func (r *ForwardingResolver) Resolve(originalRequest *msg.Message) (reply *msg.M
 		}
 		wg.Add(1)
 
-		go func() {
-			res, err := makeRequest(r.IP, r.Port, req.Encode())
+		go func(name string) {
+			defer wg.Done()
+			fmt.Printf("Forwarding query for %s\n", name)
+			response, err := forwardQuery(r.IP, r.Port, query.Bytes())
 			if err != nil {
-				fmt.Println("Failed to make originalRequest:", err)
+				fmt.Println("Failed forward query:", err)
 				return
 			}
-			resMessage := &msg.Message{}
-			err = resMessage.Decode(res)
-			if err != nil {
-				fmt.Println("Failed to decode response:", err)
-				return
-			}
-			resChan <- resMessage
-			wg.Done()
-		}()
+			responseChan <- msg.MessageFromBytes(response)
+		}(question.Name)
 	}
 
-	fmt.Printf("IdMap: %+v\n", questionMap)
-
+	// Wait for all responses to be received
 	go func() {
 		wg.Wait()
-		close(resChan)
+		close(responseChan)
 	}()
 
-	questions := make([]*msg.Question, 0, originalRequest.Header.QueryCount)
-	answers := make([]*msg.Answer, 0, originalRequest.Header.QueryCount)
-	for res := range resChan {
-		if res.Header.ResponseCode != 0 {
+	questions := make([]*msg.Question, 0, originalMessage.Header.QuestionCount)
+	answers := make([]*msg.Answer, 0, originalMessage.Header.QuestionCount)
+
+	// For each response, add the question and answer to the original response
+	for response := range responseChan {
+		if response.Header.ResponseCode != 0 {
 			fmt.Println("Response code is not 0")
 			continue
 		}
-		question, ok := questionMap[res.Header.ID]
+		question, ok := questionMap[response.Header.ID]
 		if !ok {
 			fmt.Println("ID not found in map")
 			continue
 		}
-		if len(res.Answers) == 0 {
+		if len(response.Answers) == 0 {
 			fmt.Println("No answers")
 			continue
 		}
 		questions = append(questions, question)
-		answers = append(answers, res.Answers[0])
+		answers = append(answers, response.Answers[0])
 	}
 
-	reply = &msg.Message{
+	return &msg.Message{
 		Header: &msg.Header{
-			ID:               originalRequest.Header.ID,
+			ID:               originalMessage.Header.ID,
 			IsResponse:       true,
-			RecursionDesired: originalRequest.Header.RecursionDesired,
-			OperationCode:    originalRequest.Header.OperationCode,
-			ResponseCode:     msg.GetResponseCode(originalRequest.Header),
-			QueryCount:       uint16(len(questions)),
+			RecursionDesired: originalMessage.Header.RecursionDesired,
+			OperationCode:    originalMessage.Header.OperationCode,
+			ResponseCode:     msg.GetResponseCode(originalMessage.Header),
+			QuestionCount:    uint16(len(questions)),
 			AnswerCount:      uint16(len(answers)),
 		},
 		Questions: questions,
 		Answers:   answers,
-	}
-
-	return reply, nil
+	}, nil
 }
 
 // generateID generates a random number between 0 and 65535
@@ -105,7 +124,9 @@ func generateID() uint16 {
 	return uint16(rand.Intn(65535))
 }
 
-func makeRequest(ip net.IP, port int, data []byte) ([]byte, error) {
+// TODO: Reuse UDP connections
+// forwardQuery forwards a query to another resolver
+func forwardQuery(ip net.IP, port int, data []byte) ([]byte, error) {
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip.String(), port))
 	if err != nil {
 		return nil, err

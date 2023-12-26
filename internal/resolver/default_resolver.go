@@ -41,12 +41,12 @@ func newReply(req *msg.Message) *msg.Message {
 			RecursionAvailable:  false,
 			Reserved:            0,
 			ResponseCode:        msg.GetResponseCode(req.Header),
-			QueryCount:          req.Header.QueryCount,
-			AnswerCount:         req.Header.QueryCount,
+			QuestionCount:       req.Header.QuestionCount,
+			AnswerCount:         req.Header.QuestionCount,
 			AuthorityCount:      0,
 			AdditionalCount:     0,
 		},
-		Questions: make([]*msg.Question, req.Header.QueryCount),
-		Answers:   make([]*msg.Answer, req.Header.QueryCount),
+		Questions: make([]*msg.Question, req.Header.QuestionCount),
+		Answers:   make([]*msg.Answer, req.Header.QuestionCount),
 	}
 }

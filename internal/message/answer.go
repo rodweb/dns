@@ -22,10 +22,10 @@ type Answer struct {
 	// Length of the Data field in bytes (RDLENGTH)
 	Length uint16
 	// Data specific to the query type (RDATA)
-	Data []byte
+	Data []byte // TODO: Handle different record types
 }
 
-func (a Answer) Encode() []byte {
+func (a Answer) Bytes() []byte {
 	var buff bytes.Buffer
 
 	buff.Write(serializeDomainName(a.Name))
@@ -38,16 +38,29 @@ func (a Answer) Encode() []byte {
 	return buff.Bytes()[:buff.Len()]
 }
 
+// String returns a string representation of the Answer struct
+func (a Answer) String() string {
+	return fmt.Sprintf("Answer{Name: %s, Type: %d, Class: %d, TTL: %d, Length: %d, Data: %v}",
+		a.Name,
+		a.Type,
+		a.Class,
+		a.TTL,
+		a.Length,
+		a.Data,
+	)
+}
+
+// answersFromBytes decodes the DNS message answer section from the message packet
 func answersFromBytes(data []byte, offset *int, count uint16) []*Answer {
 	result := make([]*Answer, count)
 	for i := 0; i < int(count); i++ {
 		answer := answerFromBytes(data, offset)
-		fmt.Printf("Decoding Answer %d: %+v\n", i, answer)
 		result[i] = answer
 	}
 	return result
 }
 
+// answerFromBytes decodes a DNS message answer from answer section of the message packet
 func answerFromBytes(data []byte, offset *int) *Answer {
 	name := domainNameFromBytes(data, offset)
 	answer := &Answer{
@@ -58,8 +71,8 @@ func answerFromBytes(data []byte, offset *int) *Answer {
 		Length: binary.BigEndian.Uint16(data[*offset+8 : *offset+10]),
 	}
 	*offset += 10
-	// TODO: Handle different record types
 	answer.Data = data[*offset : *offset+int(answer.Length)]
 	*offset += int(answer.Length)
+	fmt.Println(answer.String())
 	return answer
 }
