@@ -14,7 +14,6 @@ func main() {
 	flag.Parse()
 	var resolver rsv.Resolver
 
-	fmt.Printf("Resolver: %s\n", *resolverPtr)
 	resolver, err := rsv.New(*resolverPtr)
 	if err != nil {
 		fmt.Println("Failed to create resolver:", err)
@@ -44,7 +43,7 @@ func main() {
 		}
 
 		var s strings.Builder
-		s.WriteString("Packet received:\n")
+		s.WriteString("Packet received:")
 		for i, b := range buf[:size] {
 			if (i % 8) == 0 {
 				s.WriteString("\n")

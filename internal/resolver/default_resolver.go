@@ -13,11 +13,7 @@ func NewDefaultResolver() *DefaultResolver {
 func (r *DefaultResolver) Resolve(request *msg.Message) (reply *msg.Message, error error) {
 	reply = newReply(request)
 	for i, question := range request.Questions {
-		reply.Questions[i] = &msg.Question{
-			Name:  question.Name,
-			Type:  1,
-			Class: 1,
-		}
+		reply.Questions[i] = question
 		reply.Answers[i] = &msg.Answer{
 			Name:  question.Name,
 			Type:  1,
