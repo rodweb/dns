@@ -1,7 +1,6 @@
-package main
+package message
 
 import (
-	msg "github.com/rodweb/dns/internal/message"
 	"testing"
 )
 
@@ -19,7 +18,7 @@ func TestDecodeMessage(t *testing.T) {
 		0x00, 0x01, // Type
 		0x00, 0x01, // Class
 	}
-	message := msg.MessageFromBytes(packet)
+	message := MessageFromBytes(packet)
 	if message.Header.ID != 1 {
 		t.Error("Failed to decode ID")
 	}
@@ -80,7 +79,7 @@ func TestDecodeCompressedMessage(t *testing.T) {
 		0x00, 0x01, // Type
 		0x00, 0x01, // Class
 	}
-	message := msg.MessageFromBytes(packet)
+	message := MessageFromBytes(packet)
 	if len(message.Questions) != 2 {
 		t.Error("Failed to decode questions")
 	}
