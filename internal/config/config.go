@@ -14,7 +14,7 @@ type cliOptions struct {
 }
 
 type fileOptions struct {
-	Records []Record `json:"records"`
+	Records []*Record `json:"records"`
 }
 
 type Record struct {
@@ -55,7 +55,6 @@ func Load() error {
 
 	decoder := json.NewDecoder(file)
 
-	var config Config
 	err = decoder.Decode(&config)
 	if err != nil {
 		return fmt.Errorf("failed to decode config file: %s", err)

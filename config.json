@@ -1,0 +1,10 @@
+{
+  "records": [
+    {
+      "name": "codecrafters.io",
+      "type": "A",
+      "ttl": 3600,
+      "value": "8.8.8.8"
+    }
+  ]
+}

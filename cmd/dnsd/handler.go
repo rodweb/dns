@@ -2,30 +2,36 @@ package main
 
 import (
 	"fmt"
-	"github.com/rodweb/dns/internal/config"
+	cfg "github.com/rodweb/dns/internal/config"
 	msg "github.com/rodweb/dns/internal/message"
 	rsv "github.com/rodweb/dns/internal/resolver"
 	"log"
 	"strings"
 )
 
+type Resolver interface {
+	Resolve(request *msg.Message) (*msg.Message, error)
+}
+
 // Handler is a DNS query handler.
 type Handler struct {
-	dnsRecords map[string]string
-	resolver   rsv.Resolver
+	dnsRecords map[string]*cfg.Record
+	resolver   Resolver
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(records []config.Record) *Handler {
-	dnsRecords := make(map[string]string)
+func NewHandler(records []*cfg.Record) *Handler {
+	dnsRecords := make(map[string]*cfg.Record)
 
 	// Map DNS records to be served by the DNS server
 	for _, r := range records {
 		key := fmt.Sprintf("%s:%s", r.Type, r.Name)
-		dnsRecords[key] = r.Value
+		dnsRecords[key] = r
 	}
 
-	resolver := rsv.NewDefaultResolver()
+	resolver := rsv.NewDefaultResolver(dnsRecords)
+
+	log.Printf("Resolver initialized with %d DNS records\n", len(dnsRecords))
 
 	return &Handler{
 		dnsRecords: dnsRecords,
