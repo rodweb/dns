@@ -43,15 +43,15 @@ func NewHandler(records []*cfg.Record) *Handler {
 func (h *Handler) Handle(packet []byte) ([]byte, error) {
 	printPacket(packet)
 
-	// Parse the DNS message
-	message, err := parseMessage(packet)
+	// Parse the DNS request
+	request, err := parseMessage(packet)
 	if err != nil {
-		log.Println("Failed to parse message:", err)
+		log.Println("Failed to parse request:", err)
 		return nil, err
 	}
 
 	// Resolve the DNS queries
-	response, err := h.resolver.Resolve(message)
+	response, err := h.resolver.Resolve(request)
 	if err != nil {
 		log.Println("Failed to resolve:", err)
 		return nil, err
@@ -77,5 +77,5 @@ func printPacket(packet []byte) {
 // parseMessage parses a DNS message.
 func parseMessage(packet []byte) (*msg.Message, error) {
 	// TODO: Handle errors without panicking
-	return msg.MessageFromBytes(packet), nil
+	return msg.FromBytes(packet), nil
 }

@@ -24,11 +24,11 @@ func (m *Message) Bytes() []byte {
 	return buffer.Bytes()
 }
 
-// MessageFromBytes decodes a DNS message from a byte array
-func MessageFromBytes(packet []byte) *Message {
+// FromBytes decodes a DNS message from a byte array
+func FromBytes(packet []byte) *Message {
+	var offset int
 	message := &Message{}
-	message.Header = headerFromBytes(packet[:12])
-	offset := 12
+	message.Header = headerFromBytes(packet, &offset)
 	message.Questions = questionsFromBytes(packet, &offset, message.Header.QuestionCount)
 	message.Answers = answersFromBytes(packet, &offset, message.Header.AnswerCount)
 	return message

@@ -18,7 +18,7 @@ type Header struct {
 	IsResponse bool
 	// OperationCode represents the Operation code (OPCODE).
 	// It is 4 bits long and typically is 0 (standard query).
-	OperationCode uint8
+	OperationCode OperationCode
 	// AuthoritativeAnswer represents the Authoritative Answer (AA) flag.
 	// If set to 1, the responding server is an authority for
 	// the domain name in question section. This means it "owns" the domain.
@@ -40,7 +40,7 @@ type Header struct {
 	// ResponseCode represents the Response code (RCODE).
 	// It is 4 bits long and is set by the server to indicate the status of the query.
 	// 0 = No error condition
-	ResponseCode uint8
+	ResponseCode ResponseCode
 	// QuestionCount represents the number of entries in the question section (QDCOUNT).
 	QuestionCount uint16
 	// AnswerCount represents the number of entries in the answer section (ANCOUNT).
@@ -50,6 +50,19 @@ type Header struct {
 	// AdditionalCount represents the number of entries in the additional records section (ARCOUNT).
 	AdditionalCount uint16
 }
+
+type OperationCode uint8
+
+const (
+	Query OperationCode = iota
+)
+
+type ResponseCode uint8
+
+const (
+	Succeeded      ResponseCode = 0
+	NotImplemented ResponseCode = 4
+)
 
 func (h *Header) Bytes() []byte {
 	result := make([]byte, 12)
@@ -97,31 +110,31 @@ func (h *Header) String() string {
 }
 
 // headerFromBytes decodes the DNS message header from the message packet
-func headerFromBytes(data []byte) *Header {
-	flags := binary.BigEndian.Uint16(data[2:4])
+func headerFromBytes(packet []byte, offset *int) *Header {
+	flags := binary.BigEndian.Uint16(packet[2:4])
 	header := &Header{
-		ID:                  binary.BigEndian.Uint16(data[0:2]),
+		ID:                  binary.BigEndian.Uint16(packet[0:2]),
 		IsResponse:          (flags >> 15 & 0x01) != 0,
-		OperationCode:       uint8((flags >> 11)) & 0x0F,
+		OperationCode:       OperationCode((flags >> 11)) & 0x0F,
 		AuthoritativeAnswer: (flags >> 10 & 0x01) != 0,
 		Truncated:           (flags >> 9 & 0x01) != 0,
 		RecursionDesired:    (flags >> 8 & 0x01) != 0,
 		RecursionAvailable:  (flags >> 7 & 0x01) != 0,
 		Reserved:            uint8((flags >> 4)) & 0x07,
-		QuestionCount:       binary.BigEndian.Uint16(data[4:6]),
-		AnswerCount:         binary.BigEndian.Uint16(data[6:8]),
-		AuthorityCount:      binary.BigEndian.Uint16(data[8:10]),
-		AdditionalCount:     binary.BigEndian.Uint16(data[10:12]),
+		QuestionCount:       binary.BigEndian.Uint16(packet[4:6]),
+		AnswerCount:         binary.BigEndian.Uint16(packet[6:8]),
+		AuthorityCount:      binary.BigEndian.Uint16(packet[8:10]),
+		AdditionalCount:     binary.BigEndian.Uint16(packet[10:12]),
 	}
+	*offset += 12
 	fmt.Println(header.String())
 	return header
 }
 
-func GetResponseCode(header *Header) uint8 {
+func GetResponseCode(header *Header) ResponseCode {
 	// Standard query
-	if header.OperationCode == 0 {
-		return 0
+	if header.OperationCode == Query {
+		return Succeeded
 	}
-	// Not implemented
-	return 4
+	return NotImplemented
 }

@@ -72,7 +72,7 @@ func (r *ForwardingResolver) Resolve(originalMessage *msg.Message) (*msg.Message
 				fmt.Println("Failed forward query:", err)
 				return
 			}
-			responseChan <- msg.MessageFromBytes(response)
+			responseChan <- msg.FromBytes(response)
 		}(question.Name)
 	}
 
