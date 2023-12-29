@@ -22,7 +22,7 @@ type Answer struct {
 	// Length of the Data field in bytes (RDLENGTH)
 	Length uint16
 	// Data specific to the query type (RDATA)
-	Data []byte // TODO: Handle different record types
+	Data []byte // TODO: Handler different record types
 }
 
 func (a Answer) Bytes() []byte {

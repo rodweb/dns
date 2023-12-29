@@ -76,6 +76,6 @@ func printPacket(packet []byte) {
 
 // parseMessage parses a DNS message.
 func parseMessage(packet []byte) (*msg.Message, error) {
-	// TODO: Handle errors without panicking
+	// TODO: Handler errors without panicking
 	return msg.FromBytes(packet), nil
 }
